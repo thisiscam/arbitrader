@@ -59,13 +59,15 @@ public class TradingServiceTest extends BaseTestCase {
         NotificationConfiguration notificationConfiguration = new NotificationConfiguration();
         ErrorCollectorService errorCollectorService = new ErrorCollectorService();
 
+        tradingConfiguration = new TradingConfiguration();
+        tradingConfiguration.setMinimumProfit(BigDecimal.valueOf(0.0002));
+
         TickerService tickerService = new TickerService(
-            new TradingConfiguration(),
+            tradingConfiguration,
             exchangeService,
             errorCollectorService);
         spreadService = new SpreadService(tradingConfiguration, tickerService, exchangeService);
         NotificationServiceImpl notificationService = new NotificationServiceImpl(javaMailSenderMock, notificationConfiguration);
-        tradingConfiguration = new TradingConfiguration();
 
         longExchange = new ExchangeBuilder("Long", CurrencyPair.BTC_USD)
                 .withExchangeMetaData()

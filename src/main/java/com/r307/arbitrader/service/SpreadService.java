@@ -15,6 +15,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static com.r307.arbitrader.DecimalConstants.BTC_SCALE;
@@ -67,7 +68,7 @@ public class SpreadService {
                     spread.getLongExchange().getExchangeSpecification().getExchangeName(),
                     spread.getShortExchange().getExchangeSpecification().getExchangeName(),
                     spread.getCurrencyPair(),
-                    spread.getIn());
+                    spread.getOut());
             }
         }
 
@@ -116,6 +117,7 @@ public class SpreadService {
         BigDecimal spreadIn = computeSpread(effectiveBuyPrice(longTicker.getAsk(), longFee), effectiveSellPrice(shortTicker.getBid(), shortFee));
         BigDecimal spreadOut = computeSpread(effectiveSellPrice(longTicker.getBid(), longFee), effectiveBuyPrice(shortTicker.getAsk(), shortFee));
 
+        // TODO capture effective prices in Spread so they can be surfaced in logs elsewhere
         Spread spread = new Spread(
             currencyPair,
             longExchange,
@@ -173,6 +175,44 @@ public class SpreadService {
         BigDecimal scaledShortPrice = shortPrice.setScale(BTC_SCALE, RoundingMode.HALF_EVEN);
 
         return (scaledShortPrice.subtract(scaledLongPrice)).divide(scaledLongPrice, RoundingMode.HALF_EVEN);
+    }
+
+    // TODO javadoc comment
+    // TODO combine these four into one method that returns an object containing all the spreads
+    public BigDecimal getMaxSpreadIn(Spread spread) {
+        return Optional
+            .ofNullable(maxSpreadIn.get(spreadKey(
+                spread.getLongExchange(),
+                spread.getShortExchange(),
+                spread.getCurrencyPair())))
+            .orElse(BigDecimal.valueOf(-1));
+    }
+
+    public BigDecimal getMinSpreadIn(Spread spread) {
+        return Optional
+            .ofNullable(minSpreadIn.get(spreadKey(
+                spread.getLongExchange(),
+                spread.getShortExchange(),
+                spread.getCurrencyPair())))
+            .orElse(BigDecimal.valueOf(1));
+    }
+
+    public BigDecimal getMaxSpreadOut(Spread spread) {
+        return Optional
+            .ofNullable(maxSpreadOut.get(spreadKey(
+                spread.getLongExchange(),
+                spread.getShortExchange(),
+                spread.getCurrencyPair())))
+            .orElse(BigDecimal.valueOf(-1));
+    }
+
+    public BigDecimal getMinSpreadOut(Spread spread) {
+        return Optional
+            .ofNullable(minSpreadOut.get(spreadKey(
+                spread.getLongExchange(),
+                spread.getShortExchange(),
+                spread.getCurrencyPair())))
+            .orElse(BigDecimal.valueOf(1));
     }
 
     // build a summary of the contents of a spread map (high/low water marks)

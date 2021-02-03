@@ -53,12 +53,13 @@ notifications:
     to: x@x.x
 
 trading:
-  # The percentage difference between the "long" and "short" exchanges before we will open our positions.
-  entrySpread: 0.0080
-
-  # The percentage difference *in profit only* before we will close our positions.
-  # Fees will be added to this amount.
-  exitTarget: 0.0050
+  # (Default: 0.0002)
+  # The percentage of your trade amount that you want as profit on each trade. Making this bigger will push
+  # your entry targets higher and your exit targets lower by equal amounts, making them both more difficult to reach.
+  # Choosing a value for this can be difficult. Our advice is to start with a small value (such as the default) and
+  # watch the estimated and actual profit from your trades. If you find it is trading frequently, raise it a little.
+  # If it's not trading much, try lowering it a little.
+  minimumProfit: 0.0002
 
   # (Default: false)
   # Log notifications when a spreadIn reaches an all time high, or a spreadOut reaches an all time low.
@@ -70,7 +71,7 @@ trading:
   # (Optional)
   # Specify the size per trade. If this value is missing, the bot will default to 90% of the balance
   # of the exchange that has the smallest balance. I highly recommend starting out the bot
-  # with a fixedExposure around 10.00 to avoid risking much money at first.
+  # with a small fixedExposure to avoid risking too much money at first.
   fixedExposure: 10.00
 
   # (Optional)

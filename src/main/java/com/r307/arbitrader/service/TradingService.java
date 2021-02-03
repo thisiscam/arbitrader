@@ -57,6 +57,7 @@ public class TradingService {
 
     private final ObjectMapper objectMapper;
     private final TradingConfiguration tradingConfiguration;
+    private final BigDecimal profitPadding;
     private final ConditionService conditionService;
     private final ExchangeService exchangeService;
     private final SpreadService spreadService;
@@ -81,6 +82,8 @@ public class TradingService {
         this.exchangeService = exchangeService;
         this.spreadService = spreadService;
         this.notificationService = notificationService;
+
+        profitPadding = tradingConfiguration.getMinimumProfit().divide(BigDecimal.valueOf(2), RoundingMode.HALF_EVEN);
     }
 
     /**
@@ -109,15 +112,17 @@ public class TradingService {
             return;
         }
 
+        BigDecimal entryTarget = computeEntrySpread(spread);
+
         // This is more verbose than it has to be. I'm trying to keep it easy to read as we continue
         // adding more different conditions that can affect whether we trade or not.
         if (activePosition == null) {
             if (conditionService.isForceOpenCondition(spread.getCurrencyPair(), longExchangeName, shortExchangeName)) {
                 LOGGER.debug("enterPosition() {}/{} {} - forced", longExchangeName, shortExchangeName, spread.getCurrencyPair());
-                enterPosition(spread);
-            } else if (spread.getIn().compareTo(tradingConfiguration.getEntrySpread()) > 0) {
-                LOGGER.debug("enterPosition() {}/{} {} - spread in {} > entry spread {}", longExchangeName, shortExchangeName, spread.getCurrencyPair(), spread.getIn(), tradingConfiguration.getEntrySpread());
-                enterPosition(spread);
+                enterPosition(spread, entryTarget);
+            } else if (spread.getIn().compareTo(entryTarget) > 0) {
+                LOGGER.debug("enterPosition() {}/{} {} - spread in {} > entry spread {}", longExchangeName, shortExchangeName, spread.getCurrencyPair(), spread.getIn(), entryTarget);
+                enterPosition(spread, entryTarget);
             }
         } else if (spread.getCurrencyPair().equals(activePosition.getCurrencyPair())
                 && longExchangeName.equals(activePosition.getLongTrade().getExchange())
@@ -125,15 +130,61 @@ public class TradingService {
 
             if (conditionService.isForceCloseCondition()) {
                 LOGGER.debug("exitPosition() {}/{} {} - forced", longExchangeName, shortExchangeName, spread.getCurrencyPair());
-                exitPosition(spread);
+                exitPosition(spread, entryTarget);
             } else if (isActivePositionExpired()) {
                 LOGGER.debug("exitPosition() {}/{} {} - active position timed out", longExchangeName, shortExchangeName, spread.getCurrencyPair());
-                exitPosition(spread);
+                exitPosition(spread, entryTarget);
             } else if (spread.getOut().compareTo(activePosition.getExitTarget()) < 0) {
                 LOGGER.debug("exitPosition() {}/{} {} - spread out {} < exit target {}", longExchangeName, shortExchangeName, spread.getCurrencyPair(), spread.getOut(), activePosition.getExitTarget());
-                exitPosition(spread);
+                exitPosition(spread, entryTarget);
             }
         }
+    }
+
+    /**
+     * Compute the entry spread given a Spread object.
+     *
+     * We find the midpoint between max spreadIn and min spreadOut, and add padding to account for for the
+     * user's configured minimumProfit setting.
+     *
+     * @param spread A Spread object to compute an entry target for.
+     * @return A spread value representing where we would want to enter a position.
+     */
+    // TODO do I belong on the SpreadService?
+    public BigDecimal computeEntrySpread(Spread spread) {
+        BigDecimal maxSpreadIn = spreadService.getMaxSpreadIn(spread);
+        BigDecimal minSpreadOut = spreadService.getMinSpreadOut(spread);
+
+        // highest ever spreadIn is less than lowest ever spreadOut, so there is no chance of a profitable trade
+        if (maxSpreadIn.compareTo(minSpreadOut) < 0) {
+            return BigDecimal.ONE;
+        }
+
+        BigDecimal midpoint = (maxSpreadIn.add(minSpreadOut))
+            .divide(BigDecimal.valueOf(2), RoundingMode.HALF_EVEN);
+
+        return midpoint
+            .add(profitPadding)
+            .divide(BigDecimal.valueOf(2), RoundingMode.HALF_EVEN);
+    }
+
+    // find the midpoint between max spread in and min spread out
+    // exit target is the midpoint minus half the configured profit target (aka. profitPadding)
+    private BigDecimal computeExitSpread(Spread spread) {
+        BigDecimal maxSpreadIn = spreadService.getMaxSpreadIn(spread);
+        BigDecimal minSpreadOut = spreadService.getMinSpreadOut(spread);
+
+        // highest ever spreadIn is less than lowest ever spreadOut, so there is no chance of a profitable trade
+        if (maxSpreadIn.compareTo(minSpreadOut) < 0) {
+            return BigDecimal.valueOf(-10);
+        }
+
+        BigDecimal midpoint = (maxSpreadIn.add(minSpreadOut))
+            .divide(BigDecimal.valueOf(-1), RoundingMode.HALF_EVEN);
+
+        return midpoint
+            .subtract(profitPadding)
+            .divide(BigDecimal.valueOf(2), RoundingMode.HALF_EVEN);
     }
 
     public ActivePosition getActivePosition() {
@@ -145,14 +196,14 @@ public class TradingService {
     }
 
     // enter a position
-    private void enterPosition(Spread spread) {
+    private void enterPosition(Spread spread, BigDecimal entryTarget) {
         final String longExchangeName = spread.getLongExchange().getExchangeSpecification().getExchangeName();
         final String shortExchangeName = spread.getShortExchange().getExchangeSpecification().getExchangeName();
         final BigDecimal longFeePercent = exchangeService.getExchangeFee(spread.getLongExchange(), spread.getCurrencyPair(), true);
         final BigDecimal shortFeePercent = exchangeService.getExchangeFee(spread.getShortExchange(), spread.getCurrencyPair(), true);
         final CurrencyPair currencyPairLongExchange = exchangeService.convertExchangePair(spread.getLongExchange(), spread.getCurrencyPair());
         final CurrencyPair currencyPairShortExchange = exchangeService.convertExchangePair(spread.getShortExchange(), spread.getCurrencyPair());
-        final BigDecimal exitTarget = spread.getIn().subtract(tradingConfiguration.getExitTarget()); // TODO should we drop the subtract so it's absolute instead of relative?
+        final BigDecimal exitTarget = computeExitSpread(spread);
         final BigDecimal maxExposure = getMaximumExposure(spread.getLongExchange(), spread.getShortExchange());
 
         // check whether we have enough money to trade (forcing it can't work if we can't afford it)
@@ -219,7 +270,7 @@ public class TradingService {
         BigDecimal spreadVerification = spreadService.computeSpread(longEntryEffectiveLimitPrice, shortEntryEffectiveLimitPrice);
 
         if (!conditionService.isForceOpenCondition(spread.getCurrencyPair(), longExchangeName, shortExchangeName)
-            && spreadVerification.compareTo(tradingConfiguration.getEntrySpread()) < 0) {
+            && spreadVerification.compareTo(entryTarget) < 0) {
             LOGGER.debug("Spread verification is less than entry spread, will not trade"); // this is debug because it can get spammy
             return;
         }
@@ -244,7 +295,7 @@ public class TradingService {
 
             LOGGER.info("Estimated profit: {}", profit);
 
-            if (profit.compareTo(BigDecimal.ZERO) <= 0) {
+            if (profit.compareTo(BigDecimal.valueOf(0.01)) <= 0) { // only enter if it's expected to make at least one cent
                 LOGGER.warn("Trade is not expected to be profitable. Tuck and roll!");
                 return;
             } else {
@@ -331,7 +382,7 @@ public class TradingService {
     }
 
     // exit a position
-    private void exitPosition(Spread spread) {
+    private void exitPosition(Spread spread, BigDecimal entryTarget) {
         final String longExchangeName = spread.getLongExchange().getExchangeSpecification().getExchangeName();
         final String shortExchangeName = spread.getShortExchange().getExchangeSpecification().getExchangeName();
         final BigDecimal longFeePercent = exchangeService.getExchangeFee(spread.getLongExchange(), spread.getCurrencyPair(), true);
@@ -407,7 +458,7 @@ public class TradingService {
         //
         // Also, don't spam the logs with this warning. It's possible that this condition could last for awhile
         // and this code could be executed frequently.
-        if (isActivePositionExpired() && spreadVerification.compareTo(tradingConfiguration.getEntrySpread()) < 0) {
+        if (isActivePositionExpired() && spreadVerification.compareTo(entryTarget) < 0) {
             if (!timeoutExitWarning) {
                 LOGGER.warn("Timeout exit triggered");
                 LOGGER.warn("Cannot exit now because spread would cause immediate reentry");

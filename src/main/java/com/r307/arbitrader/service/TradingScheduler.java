@@ -217,7 +217,7 @@ public class TradingScheduler {
                     spread.getShortExchange().getExchangeSpecification().getExchangeName(),
                     spread.getCurrencyPair(),
                     spread.getIn(),
-                    tradingConfiguration.getEntrySpread());
+                    tradingService.computeEntrySpread(spread));
             } else if (tradingService.getActivePosition() != null
                 && tradingService.getActivePosition().getCurrencyPair().equals(spread.getCurrencyPair())
                 && tradingService.getActivePosition().getLongTrade().getExchange().equals(spread.getLongExchange().getExchangeSpecification().getExchangeName())
@@ -291,9 +291,14 @@ public class TradingScheduler {
                         spread.getLongTicker().getAsk(),
                         spread.getShortTicker().getBid(),
                         spread.getShortTicker().getAsk());
-                    LOGGER.info("\tSpread In/Out:{}/{}",
+                    LOGGER.info("\tSpread In  Min/Now/Max:{}/{}/{}",
+                        spreadService.getMinSpreadIn(spread),
                         spread.getIn(),
-                        spread.getOut());
+                        spreadService.getMaxSpreadIn(spread));
+                    LOGGER.info("\tSpread Out Min/Now/Max:{}/{}/{}",
+                        spreadService.getMinSpreadOut(spread),
+                        spread.getOut(),
+                        spreadService.getMaxSpreadOut(spread));
                 }
             });
     }
