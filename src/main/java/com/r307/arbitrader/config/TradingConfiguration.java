@@ -17,21 +17,12 @@ import static com.r307.arbitrader.DecimalConstants.USD_SCALE;
 @ConfigurationProperties("trading")
 @Configuration
 public class TradingConfiguration {
-    private BigDecimal minimumProfit;
     private Boolean spreadNotifications = false;
     private BigDecimal fixedExposure;
     private List<ExchangeConfiguration> exchanges = new ArrayList<>();
     private List<String> tradeBlacklist = new ArrayList<>();
     private Long tradeTimeout;
     private PaperConfiguration paper;
-
-    public BigDecimal getMinimumProfit() {
-        return minimumProfit;
-    }
-
-    public void setMinimumProfit(BigDecimal minimumProfit) {
-        this.minimumProfit = minimumProfit;
-    }
 
     public Boolean isSpreadNotifications() {
         return spreadNotifications;

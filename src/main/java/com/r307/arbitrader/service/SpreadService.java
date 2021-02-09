@@ -55,16 +55,22 @@ public class SpreadService {
         String spreadKey = spreadKey(spread.getLongExchange(), spread.getShortExchange(), spread.getCurrencyPair());
 
         if (LOGGER.isInfoEnabled() && tradingConfiguration.isSpreadNotifications()) {
-            if (spread.getIn().compareTo(maxSpreadIn.getOrDefault(spreadKey, BigDecimal.valueOf(-1))) > 0) {
-                LOGGER.info("Record high spreadIn: {}/{} {} {}",
+            BigDecimal spreadIn = maxSpreadIn.getOrDefault(spreadKey, BigDecimal.valueOf(-1));
+            BigDecimal spreadOut = minSpreadOut.getOrDefault(spreadKey, BigDecimal.valueOf(1));
+            boolean crossed = spreadIn.compareTo(spreadOut) > 0;
+
+            if (spread.getIn().compareTo(spreadIn) > 0) {
+                LOGGER.info("[{}] Record high spreadIn: {}/{} {} {}",
+                    crossed ? "✔" : "❌",
                     spread.getLongExchange().getExchangeSpecification().getExchangeName(),
                     spread.getShortExchange().getExchangeSpecification().getExchangeName(),
                     spread.getCurrencyPair(),
                     spread.getIn());
             }
 
-            if (spread.getOut().compareTo(minSpreadOut.getOrDefault(spreadKey, BigDecimal.valueOf(1))) < 0) {
-                LOGGER.info("Record low spreadOut: {}/{} {} {}",
+            if (spread.getOut().compareTo(spreadOut) < 0) {
+                LOGGER.info("[{}] Record low spreadOut: {}/{} {} {}",
+                    crossed ? "✔" : "❌",
                     spread.getLongExchange().getExchangeSpecification().getExchangeName(),
                     spread.getShortExchange().getExchangeSpecification().getExchangeName(),
                     spread.getCurrencyPair(),

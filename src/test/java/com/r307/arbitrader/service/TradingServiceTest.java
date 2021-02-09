@@ -8,13 +8,14 @@ import com.r307.arbitrader.config.NotificationConfiguration;
 import com.r307.arbitrader.exception.OrderNotFoundException;
 import com.r307.arbitrader.config.TradingConfiguration;
 import com.r307.arbitrader.service.model.ArbitrageLog;
+import com.r307.arbitrader.service.model.Spread;
 import org.apache.commons.io.FileUtils;
 import org.junit.Before;
 import org.junit.Test;
 import org.knowm.xchange.Exchange;
 import org.knowm.xchange.currency.Currency;
 import org.knowm.xchange.currency.CurrencyPair;
-import org.knowm.xchange.dto.Order;
+import org.knowm.xchange.dto.marketdata.Ticker;
 import org.mockito.Mock;
 import org.springframework.mail.javamail.JavaMailSender;
 
@@ -39,7 +40,7 @@ public class TradingServiceTest extends BaseTestCase {
     private Exchange longExchange;
     private Exchange shortExchange;
 
-    private TradingConfiguration tradingConfiguration;
+    private final TradingConfiguration tradingConfiguration = new TradingConfiguration();
 
     @Mock
     private ExchangeService exchangeService;
@@ -59,9 +60,6 @@ public class TradingServiceTest extends BaseTestCase {
         NotificationConfiguration notificationConfiguration = new NotificationConfiguration();
         ErrorCollectorService errorCollectorService = new ErrorCollectorService();
 
-        tradingConfiguration = new TradingConfiguration();
-        tradingConfiguration.setMinimumProfit(BigDecimal.valueOf(0.0002));
-
         TickerService tickerService = new TickerService(
             tradingConfiguration,
             exchangeService,
@@ -77,6 +75,7 @@ public class TradingServiceTest extends BaseTestCase {
                 .build();
         shortExchange = new ExchangeBuilder("Short", CurrencyPair.BTC_USD)
                 .withExchangeMetaData()
+                .withOrderBook(100, 100)
                 .withBalance(Currency.USD, new BigDecimal("500.00").setScale(USD_SCALE, RoundingMode.HALF_EVEN))
                 .build();
 
@@ -201,64 +200,144 @@ public class TradingServiceTest extends BaseTestCase {
 
     // the best price point has enough volume to fill my order
     @Test
-    public void testLimitPriceLongSufficientVolume() {
+    public void testEntryLimitPriceSufficientVolume() throws IOException {
         when(exchangeService.convertExchangePair(any(Exchange.class), any(CurrencyPair.class)))
             .thenReturn(currencyPair);
 
-        BigDecimal allowedVolume = new BigDecimal("1.00");
-        BigDecimal limitPrice = tradingService.getLimitPrice(longExchange, currencyPair, allowedVolume, Order.OrderType.ASK);
+        BigDecimal longAllowedVolume = new BigDecimal("0.001");
+        BigDecimal shortAllowedVolume = new BigDecimal("0.001");
 
-        assertEquals(new BigDecimal("100.0000").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitPrice);
+        Spread spread = new Spread(
+            currencyPair,
+            longExchange,
+            shortExchange,
+            null,
+            null,
+            BigDecimal.ONE,
+            BigDecimal.ONE);
+
+        Ticker limitTicker = tradingService.getLimitPrice(spread, longAllowedVolume, shortAllowedVolume, true);
+
+        assertEquals(new BigDecimal("100.0000").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitTicker.getBid());
+        assertEquals(new BigDecimal("100.0990").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitTicker.getAsk());
     }
 
     // the best price point has enough volume to fill my order
     @Test
-    public void testLimitPriceShortSufficientVolume() {
+    public void testExitLimitPriceSufficientVolume() throws IOException {
         when(exchangeService.convertExchangePair(any(Exchange.class), any(CurrencyPair.class)))
             .thenReturn(currencyPair);
 
-        BigDecimal allowedVolume = new BigDecimal("1.00");
-        BigDecimal limitPrice = tradingService.getLimitPrice(longExchange, currencyPair, allowedVolume, Order.OrderType.BID);
+        BigDecimal longAllowedVolume = new BigDecimal("0.001");
+        BigDecimal shortAllowedVolume = new BigDecimal("0.001");
 
-        assertEquals(new BigDecimal("100.0990").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitPrice);
+        Spread spread = new Spread(
+            currencyPair,
+            longExchange,
+            shortExchange,
+            null,
+            null,
+            BigDecimal.ONE,
+            BigDecimal.ONE);
+
+        Ticker limitTicker = tradingService.getLimitPrice(spread, longAllowedVolume, shortAllowedVolume, false);
+
+        assertEquals(new BigDecimal("100.0000").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitTicker.getBid());
+        assertEquals(new BigDecimal("100.0990").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitTicker.getAsk());
     }
 
     // the best price point isn't big enough to fill my order alone, so the price will slip
     @Test
-    public void testLimitPriceLongInsufficientVolume() {
+    public void testEntryLimitPriceInsufficientVolume() throws IOException {
         when(exchangeService.convertExchangePair(any(Exchange.class), any(CurrencyPair.class)))
             .thenReturn(currencyPair);
-        BigDecimal allowedVolume = new BigDecimal("11.00");
-        BigDecimal limitPrice = tradingService.getLimitPrice(longExchange, currencyPair, allowedVolume, Order.OrderType.ASK);
+        BigDecimal longAllowedVolume = new BigDecimal("11.00");
+        BigDecimal shortAllowedVolume = new BigDecimal("0.001");
 
-        assertEquals(new BigDecimal("100.0010").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitPrice);
+        Spread spread = new Spread(
+            currencyPair,
+            longExchange,
+            shortExchange,
+            null,
+            null,
+            BigDecimal.ZERO,
+            BigDecimal.ZERO);
+
+        Ticker limitTicker = tradingService.getLimitPrice(spread, longAllowedVolume, shortAllowedVolume, true);
+
+        assertEquals(new BigDecimal("100.0010").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitTicker.getBid());
+        assertEquals(new BigDecimal("100.0990").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitTicker.getAsk());
     }
 
     // the best price point isn't big enough to fill my order alone, so the price will slip
     @Test
-    public void testLimitPriceShortInsufficientVolume() {
+    public void testExitLimitPriceInsufficientVolume() throws IOException {
         when(exchangeService.convertExchangePair(any(Exchange.class), any(CurrencyPair.class)))
             .thenReturn(currencyPair);
-        BigDecimal allowedVolume = new BigDecimal("11.00");
-        BigDecimal limitPrice = tradingService.getLimitPrice(longExchange, currencyPair, allowedVolume, Order.OrderType.BID);
+        BigDecimal longAllowedVolume = new BigDecimal("11.00");
+        BigDecimal shortAllowedVolume = new BigDecimal("0.001");
 
-        assertEquals(new BigDecimal("100.0980").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitPrice);
+        Spread spread = new Spread(
+            currencyPair,
+            longExchange,
+            shortExchange,
+            null,
+            null,
+            BigDecimal.ZERO,
+            BigDecimal.ZERO);
+
+        Ticker limitTicker = tradingService.getLimitPrice(spread, longAllowedVolume, shortAllowedVolume, false);
+
+        assertEquals(new BigDecimal("100.0010").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitTicker.getBid());
+        assertEquals(new BigDecimal("100.0990").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitTicker.getAsk());
     }
 
     // the exchange doesn't have enough volume to fill my gigantic order
     @Test(expected = RuntimeException.class)
-    public void testLimitPriceLongInsufficientLiquidity() {
-        BigDecimal allowedVolume = new BigDecimal(10001);
+    public void testEntryLimitPriceInsufficientLiquidity() throws IOException {
+        when(exchangeService.convertExchangePair(any(Exchange.class), any(CurrencyPair.class)))
+            .thenReturn(currencyPair);
 
-        tradingService.getLimitPrice(longExchange, currencyPair, allowedVolume, Order.OrderType.ASK);
+        BigDecimal longAllowedVolume = new BigDecimal("1000001");
+        BigDecimal shortAllowedVolume = new BigDecimal("1.00");
+
+        Spread spread = new Spread(
+            currencyPair,
+            longExchange,
+            shortExchange,
+            null,
+            null,
+            BigDecimal.ZERO,
+            BigDecimal.ZERO);
+
+        Ticker limitTicker = tradingService.getLimitPrice(spread, longAllowedVolume, shortAllowedVolume, true);
+
+        assertEquals(new BigDecimal("100.0010").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitTicker.getBid());
+        assertEquals(new BigDecimal("100.0990").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitTicker.getAsk());
     }
 
     // the exchange doesn't have enough volume to fill my gigantic order
     @Test(expected = RuntimeException.class)
-    public void testLimitPriceShortInsufficientLiquidity() {
-        BigDecimal allowedVolume = new BigDecimal(10001);
+    public void testExitLimitPriceInsufficientLiquidity() throws IOException {
+        when(exchangeService.convertExchangePair(any(Exchange.class), any(CurrencyPair.class)))
+            .thenReturn(currencyPair);
 
-        tradingService.getLimitPrice(longExchange, currencyPair, allowedVolume, Order.OrderType.BID);
+        BigDecimal longAllowedVolume = new BigDecimal("1000001");
+        BigDecimal shortAllowedVolume = new BigDecimal("1.00");
+
+        Spread spread = new Spread(
+            currencyPair,
+            longExchange,
+            shortExchange,
+            null,
+            null,
+            BigDecimal.ZERO,
+            BigDecimal.ZERO);
+
+        Ticker limitTicker = tradingService.getLimitPrice(spread, longAllowedVolume, shortAllowedVolume, false);
+
+        assertEquals(new BigDecimal("100.0010").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitTicker.getBid());
+        assertEquals(new BigDecimal("100.0990").setScale(BTC_SCALE, RoundingMode.HALF_EVEN), limitTicker.getAsk());
     }
 
     @Test

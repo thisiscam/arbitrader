@@ -265,7 +265,7 @@ public class ExchangeBuilder {
                     .setScale(BTC_SCALE, RoundingMode.HALF_EVEN)));
         }
 
-        if (Order.OrderType.BID.equals(type)) {
+        if (Order.OrderType.ASK.equals(type)) {
             Collections.reverse(orders);
         }
 

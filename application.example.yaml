@@ -53,14 +53,6 @@ notifications:
     to: x@x.x
 
 trading:
-  # (Default: 0.0002)
-  # The percentage of your trade amount that you want as profit on each trade. Making this bigger will push
-  # your entry targets higher and your exit targets lower by equal amounts, making them both more difficult to reach.
-  # Choosing a value for this can be difficult. Our advice is to start with a small value (such as the default) and
-  # watch the estimated and actual profit from your trades. If you find it is trading frequently, raise it a little.
-  # If it's not trading much, try lowering it a little.
-  minimumProfit: 0.0002
-
   # (Default: false)
   # Log notifications when a spreadIn reaches an all time high, or a spreadOut reaches an all time low.
   # This gets very noisy at first because the values all start out empty, but after a few minutes it quiets down.

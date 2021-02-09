@@ -17,6 +17,7 @@ import org.knowm.xchange.currency.Currency;
 import org.knowm.xchange.currency.CurrencyPair;
 import org.knowm.xchange.dto.Order;
 import org.knowm.xchange.dto.marketdata.OrderBook;
+import org.knowm.xchange.dto.marketdata.Ticker;
 import org.knowm.xchange.dto.meta.CurrencyMetaData;
 import org.knowm.xchange.dto.meta.CurrencyPairMetaData;
 import org.knowm.xchange.dto.meta.ExchangeMetaData;
@@ -57,7 +58,6 @@ public class TradingService {
 
     private final ObjectMapper objectMapper;
     private final TradingConfiguration tradingConfiguration;
-    private final BigDecimal profitPadding;
     private final ConditionService conditionService;
     private final ExchangeService exchangeService;
     private final SpreadService spreadService;
@@ -82,8 +82,6 @@ public class TradingService {
         this.exchangeService = exchangeService;
         this.spreadService = spreadService;
         this.notificationService = notificationService;
-
-        profitPadding = tradingConfiguration.getMinimumProfit().divide(BigDecimal.valueOf(2), RoundingMode.HALF_EVEN);
     }
 
     /**
@@ -121,7 +119,7 @@ public class TradingService {
                 LOGGER.debug("enterPosition() {}/{} {} - forced", longExchangeName, shortExchangeName, spread.getCurrencyPair());
                 enterPosition(spread, entryTarget);
             } else if (spread.getIn().compareTo(entryTarget) > 0) {
-                LOGGER.debug("enterPosition() {}/{} {} - spread in {} > entry spread {}", longExchangeName, shortExchangeName, spread.getCurrencyPair(), spread.getIn(), entryTarget);
+                LOGGER.info("enterPosition() {}/{} {} - spread in {} > entry spread {}", longExchangeName, shortExchangeName, spread.getCurrencyPair(), spread.getIn(), entryTarget);
                 enterPosition(spread, entryTarget);
             }
         } else if (spread.getCurrencyPair().equals(activePosition.getCurrencyPair())
@@ -135,7 +133,7 @@ public class TradingService {
                 LOGGER.debug("exitPosition() {}/{} {} - active position timed out", longExchangeName, shortExchangeName, spread.getCurrencyPair());
                 exitPosition(spread, entryTarget);
             } else if (spread.getOut().compareTo(activePosition.getExitTarget()) < 0) {
-                LOGGER.debug("exitPosition() {}/{} {} - spread out {} < exit target {}", longExchangeName, shortExchangeName, spread.getCurrencyPair(), spread.getOut(), activePosition.getExitTarget());
+                LOGGER.info("exitPosition() {}/{} {} - spread out {} < exit target {}", longExchangeName, shortExchangeName, spread.getCurrencyPair(), spread.getOut(), activePosition.getExitTarget());
                 exitPosition(spread, entryTarget);
             }
         }
@@ -144,8 +142,8 @@ public class TradingService {
     /**
      * Compute the entry spread given a Spread object.
      *
-     * We find the midpoint between max spreadIn and min spreadOut, and add padding to account for for the
-     * user's configured minimumProfit setting.
+     * We find the midpoint between max spreadIn and min spreadOut, then add the minimum of the distance from
+     * there to either the max spreadIn or min spreadOut. Whichever is smaller.
      *
      * @param spread A Spread object to compute an entry target for.
      * @return A spread value representing where we would want to enter a position.
@@ -162,28 +160,30 @@ public class TradingService {
 
         BigDecimal midpoint = (maxSpreadIn.add(minSpreadOut))
             .divide(BigDecimal.valueOf(2), RoundingMode.HALF_EVEN);
+        BigDecimal padding = maxSpreadIn.subtract(midpoint).min(midpoint.subtract(minSpreadOut));
 
         return midpoint
-            .add(profitPadding)
+            .add(padding)
             .divide(BigDecimal.valueOf(2), RoundingMode.HALF_EVEN);
     }
 
     // find the midpoint between max spread in and min spread out
-    // exit target is the midpoint minus half the configured profit target (aka. profitPadding)
-    private BigDecimal computeExitSpread(Spread spread) {
+    // exit target is the midpoint minus the smaller of the distance to either max spreadIn or min spreadOut
+    BigDecimal computeExitSpread(Spread spread) {
         BigDecimal maxSpreadIn = spreadService.getMaxSpreadIn(spread);
         BigDecimal minSpreadOut = spreadService.getMinSpreadOut(spread);
 
         // highest ever spreadIn is less than lowest ever spreadOut, so there is no chance of a profitable trade
         if (maxSpreadIn.compareTo(minSpreadOut) < 0) {
-            return BigDecimal.valueOf(-10);
+            return BigDecimal.valueOf(-1);
         }
 
         BigDecimal midpoint = (maxSpreadIn.add(minSpreadOut))
-            .divide(BigDecimal.valueOf(-1), RoundingMode.HALF_EVEN);
+            .divide(BigDecimal.valueOf(2), RoundingMode.HALF_EVEN);
+        BigDecimal padding = maxSpreadIn.subtract(midpoint).min(midpoint.subtract(minSpreadOut));
 
         return midpoint
-            .subtract(profitPadding)
+            .subtract(padding)
             .divide(BigDecimal.valueOf(2), RoundingMode.HALF_EVEN);
     }
 
@@ -203,7 +203,6 @@ public class TradingService {
         final BigDecimal shortFeePercent = exchangeService.getExchangeFee(spread.getShortExchange(), spread.getCurrencyPair(), true);
         final CurrencyPair currencyPairLongExchange = exchangeService.convertExchangePair(spread.getLongExchange(), spread.getCurrencyPair());
         final CurrencyPair currencyPairShortExchange = exchangeService.convertExchangePair(spread.getShortExchange(), spread.getCurrencyPair());
-        final BigDecimal exitTarget = computeExitSpread(spread);
         final BigDecimal maxExposure = getMaximumExposure(spread.getLongExchange(), spread.getShortExchange());
 
         // check whether we have enough money to trade (forcing it can't work if we can't afford it)
@@ -237,8 +236,7 @@ public class TradingService {
         BigDecimal longVolume = getVolumeForEntryPosition(maxExposure, spread.getLongTicker().getAsk(), longScale);
         BigDecimal shortVolume = getVolumeForEntryPosition(maxExposure, spread.getShortTicker().getBid(), shortScale);
 
-        final BigDecimal longLimitPrice; // price from the exchange
-        final BigDecimal shortLimitPrice; // price from the exchange
+        final Ticker limitPrice; // price from the exchange
         final BigDecimal longEntryEffectiveLimitPrice; // price + fees, multiply by volume to get total cost of transaction
         final BigDecimal shortEntryEffectiveLimitPrice; // price + fees
 
@@ -252,12 +250,11 @@ public class TradingService {
         // This recalculation of the spread is a little computationally expensive, which is why we don't do it
         // until we know we're close to wanting to trade.
         try {
-            longLimitPrice = getLimitPrice(spread.getLongExchange(), spread.getCurrencyPair(), longVolume, Order.OrderType.ASK);
-            shortLimitPrice = getLimitPrice(spread.getShortExchange(), spread.getCurrencyPair(), shortVolume, Order.OrderType.BID);
+            limitPrice = getLimitPrice(spread, longVolume, shortVolume, true);
 
-            longEntryEffectiveLimitPrice = spreadService.effectiveBuyPrice(longLimitPrice, longFeePercent);
-            shortEntryEffectiveLimitPrice = spreadService.effectiveSellPrice(shortLimitPrice, shortFeePercent);
-        } catch (ExchangeException e) {
+            longEntryEffectiveLimitPrice = spreadService.effectiveBuyPrice(limitPrice.getAsk(), longFeePercent);
+            shortEntryEffectiveLimitPrice = spreadService.effectiveSellPrice(limitPrice.getBid(), shortFeePercent);
+        } catch (IOException | ExchangeException e) {
             LOGGER.warn("Failed to fetch order books for {}/{} and currency {}/{} to compute entry prices: {}",
                 longExchangeName,
                 spread.getShortExchange().getDefaultExchangeSpecification().getExchangeName(),
@@ -275,12 +272,14 @@ public class TradingService {
             return;
         }
 
+        BigDecimal exitTarget = computeExitSpread(spread);
+
         // TODO move me into a method before PR
         { // estimate profit at exit
             // hey! this is the magical part!
             // we use exitTarget and longEffectivePrice to calculate a short exit effective price that gives us the target spread
             // and now we can estimate the profit of the trade!
-            BigDecimal longExitEffectivePrice = spreadService.effectiveSellPrice(longLimitPrice, longFeePercent);
+            BigDecimal longExitEffectivePrice = spreadService.effectiveSellPrice(limitPrice.getAsk(), longFeePercent);
             BigDecimal shortExitEffectivePrice = exitTarget.multiply(longExitEffectivePrice).add(longExitEffectivePrice);
 
             BigDecimal longEntryCost = longVolume.multiply(longEntryEffectiveLimitPrice);
@@ -297,6 +296,14 @@ public class TradingService {
 
             if (profit.compareTo(BigDecimal.valueOf(0.01)) <= 0) { // only enter if it's expected to make at least one cent
                 LOGGER.warn("Trade is not expected to be profitable. Tuck and roll!");
+                LOGGER.info("{}/{} {} prices: {}/{} spreads: {}/{}",
+                    longExchangeName,
+                    shortExchangeName,
+                    spread.getCurrencyPair(),
+                    limitPrice.getAsk(),
+                    limitPrice.getBid(),
+                    spread.getIn(),
+                    spread.getOut());
                 return;
             } else {
                 LOGGER.info("Trade looks good. Let's GOOOOO!!!");
@@ -312,7 +319,7 @@ public class TradingService {
         final BigDecimal longVolumeWithFeesAndAdjustedStep = adjustStepSize(longExchangeMetaData, currencyPairLongExchange, longVolumeWithFees);
         final BigDecimal shortVolumeWithFeesAndAdjustedStep = adjustStepSize(shortExchangeMetaData, currencyPairShortExchange, shortVolumeWithFees);
 
-        logEntryTrade(spread, shortExchangeName, longExchangeName, exitTarget, longVolume, shortVolume, longLimitPrice, shortLimitPrice);
+        logEntryTrade(spread, shortExchangeName, longExchangeName, exitTarget, longVolume, shortVolume, limitPrice.getAsk(), limitPrice.getBid());
 
         BigDecimal totalBalance = logCurrentExchangeBalances(spread.getLongExchange(), spread.getShortExchange());
 
@@ -324,20 +331,20 @@ public class TradingService {
             activePosition.setEntryBalance(totalBalance);
             activePosition.getLongTrade().setExchange(spread.getLongExchange());
             activePosition.getLongTrade().setVolume(longVolume);
-            activePosition.getLongTrade().setEntry(longLimitPrice);
+            activePosition.getLongTrade().setEntry(limitPrice.getBid());
             activePosition.getShortTrade().setExchange(spread.getShortExchange());
             activePosition.getShortTrade().setVolume(shortVolume);
-            activePosition.getShortTrade().setEntry(shortLimitPrice);
+            activePosition.getShortTrade().setEntry(limitPrice.getAsk());
 
             executeOrderPair(
                 spread.getLongExchange(), spread.getShortExchange(),
                 spread.getCurrencyPair(),
-                longLimitPrice, shortLimitPrice,
+                limitPrice.getBid(), limitPrice.getAsk(),
                 longVolumeWithFeesAndAdjustedStep, shortVolumeWithFeesAndAdjustedStep,
                 true);
 
             notificationService.sendEmailNotificationBodyForEntryTrade(spread, exitTarget, longVolume,
-                longLimitPrice, shortVolume, shortLimitPrice);
+                limitPrice.getBid(), shortVolume, limitPrice.getAsk());
         } catch (IOException e) {
             LOGGER.error("IOE executing limit orders: ", e);
             activePosition = null;
@@ -410,8 +417,7 @@ public class TradingService {
 
         LOGGER.debug("Volumes: {}/{}", longVolume, shortVolume);
 
-        final BigDecimal longLimitPrice;
-        final BigDecimal shortLimitPrice;
+        final Ticker limitPrice;
         final BigDecimal longExitEffectiveLimitPrice; // price + fees, multiply by volume to get total cost of transaction
         final BigDecimal shortExitEffectiveLimitPrice; // price + fees
 
@@ -420,12 +426,11 @@ public class TradingService {
         // at a slightly worse price, which we call "slip". This is a little bit computationally expensive which is why
         // we wait until we're pretty sure we want to trade before we do it.
         try {
-            longLimitPrice = getLimitPrice(spread.getLongExchange(), spread.getCurrencyPair(), longVolume, Order.OrderType.BID);
-            shortLimitPrice = getLimitPrice(spread.getShortExchange(), spread.getCurrencyPair(), shortVolume, Order.OrderType.ASK);
+            limitPrice = getLimitPrice(spread, longVolume, shortVolume, false);
 
-            longExitEffectiveLimitPrice = spreadService.effectiveBuyPrice(longLimitPrice, longFeePercent);
-            shortExitEffectiveLimitPrice = spreadService.effectiveSellPrice(shortLimitPrice, shortFeePercent);
-        } catch (ExchangeException e) {
+            longExitEffectiveLimitPrice = spreadService.effectiveSellPrice(limitPrice.getBid(), longFeePercent);
+            shortExitEffectiveLimitPrice = spreadService.effectiveBuyPrice(limitPrice.getAsk(), shortFeePercent);
+        } catch (IOException | ExchangeException e) {
             LOGGER.warn("Failed to fetch order books (on active position) for {}/{} and currency {}/{} to compute entry prices: {}",
                 longExchangeName,
                 spread.getShortExchange().getDefaultExchangeSpecification().getExchangeName(),
@@ -435,7 +440,7 @@ public class TradingService {
             return;
         }
 
-        LOGGER.debug("Limit prices: {}/{}", longLimitPrice, shortLimitPrice);
+        LOGGER.debug("Limit prices: {}/{}", limitPrice.getBid(), limitPrice.getAsk());
 
         // this spread is based on the prices we calculated using the order book, so it's more accurate than the original estimate
         BigDecimal spreadVerification = spreadService.computeSpread(longExitEffectiveLimitPrice, shortExitEffectiveLimitPrice);
@@ -485,27 +490,27 @@ public class TradingService {
                 longExchangeName,
                 spread.getCurrencyPair(),
                 longVolume,
-                longLimitPrice,
+                limitPrice.getBid(),
                 spread.getLongTicker().getBid().toPlainString(),
                 Currency.USD.getSymbol(),
-                longVolume.multiply(longLimitPrice).toPlainString(),
+                longVolume.multiply(limitPrice.getBid()).toPlainString(),
                 Currency.USD.getSymbol(),
                 longVolume.multiply(spread.getLongTicker().getBid()).toPlainString());
             LOGGER.info("Short close: {} {} {} @ {} (slipped from {}) = {}{} (slipped from {}{})",
                 shortExchangeName,
                 spread.getCurrencyPair(),
                 shortVolume,
-                shortLimitPrice,
+                limitPrice.getAsk(),
                 spread.getShortTicker().getAsk().toPlainString(),
                 Currency.USD.getSymbol(),
-                shortVolume.multiply(shortLimitPrice).toPlainString(),
+                shortVolume.multiply(limitPrice.getAsk()).toPlainString(),
                 Currency.USD.getSymbol(),
                 shortVolume.multiply(spread.getShortTicker().getAsk()).toPlainString());
 
             executeOrderPair(
                 spread.getLongExchange(), spread.getShortExchange(),
                 spread.getCurrencyPair(),
-                longLimitPrice, shortLimitPrice,
+                limitPrice.getBid(), limitPrice.getAsk(),
                 longVolumeWithFeesAndAdjustedStep, shortVolumeWithFeesAndAdjustedStep,
                 false);
         } catch (IOException e) {
@@ -531,13 +536,13 @@ public class TradingService {
         final ArbitrageLog arbitrageLog = ArbitrageLog.ArbitrageLogBuilder.builder()
             .withShortExchange(shortExchangeName)
             .withShortCurrency(spread.getCurrencyPair().toString())
-            .withShortSpread(shortLimitPrice)
-            .withShortSlip(spread.getShortTicker().getAsk().subtract(shortLimitPrice))
+            .withShortSpread(limitPrice.getAsk())
+            .withShortSlip(spread.getShortTicker().getAsk().subtract(limitPrice.getAsk()))
             .withShortAmount(shortVolume.multiply(spread.getShortTicker().getAsk()))
             .withLongExchange(longExchangeName)
             .withLongCurrency(spread.getCurrencyPair().toString())
-            .withLongSpread(longLimitPrice)
-            .withLongSlip(longLimitPrice.subtract(spread.getLongTicker().getBid()))
+            .withLongSpread(limitPrice.getBid())
+            .withLongSlip(limitPrice.getBid().subtract(spread.getLongTicker().getBid()))
             .withLongAmount(longVolume.multiply(spread.getLongTicker().getBid()))
             .withProfit(profit)
             .withTimestamp(OffsetDateTime.now())
@@ -546,8 +551,8 @@ public class TradingService {
         persistArbitrageToCsvFile(arbitrageLog);
 
         // Email notification must be sent before we set activePosition = null
-        notificationService.sendEmailNotificationBodyForExitTrade(spread, longVolume, longLimitPrice, shortVolume,
-            shortLimitPrice, activePosition.getEntryBalance(), updatedBalance);
+        notificationService.sendEmailNotificationBodyForExitTrade(spread, longVolume, limitPrice.getBid(), shortVolume,
+            limitPrice.getAsk(), activePosition.getEntryBalance(), updatedBalance);
 
         activePosition = null;
 
@@ -875,40 +880,52 @@ public class TradingService {
 
     /**
      * Figure out the price for a limit order based on the order book. Computationally expensive, but accurate.
+     * The bid and ask prices in this Ticker will be from the short and long exchanges on entry and long and short
+     * on exit. In other words if you're buying you use the ask, if you're selling you use the bid regardless of
+     * whether you're entering or exiting.
      *
-     * @param exchange The exchange to use.
-     * @param rawCurrencyPair The currency pair to use, not converted for home currency.
-     * @param allowedVolume The volume we're looking for (governs how many orders to look through before stopping).
-     * @param orderType Are we buying or selling? Use the bid or ask price?
+     * @param spread The Spread contains the exchanges and currency pair.
+     * @param longAllowedVolume The allowed volume for the long exchange.
+     * @param shortAllowedVolume The allowed volume for the short exchange.
      * @return The more accurate price for this order.
+     * @throws IOException if the communication with the exchanges fails
      */
-    BigDecimal getLimitPrice(Exchange exchange, CurrencyPair rawCurrencyPair, BigDecimal allowedVolume, Order.OrderType orderType) {
-        CurrencyPair currencyPair = exchangeService.convertExchangePair(exchange, rawCurrencyPair);
+    Ticker getLimitPrice(Spread spread, BigDecimal longAllowedVolume, BigDecimal shortAllowedVolume, boolean isEntry) throws IOException {
+        CurrencyPair longCurrencyPair = exchangeService.convertExchangePair(spread.getLongExchange(), spread.getCurrencyPair());
+        CurrencyPair shortCurrencyPair = exchangeService.convertExchangePair(spread.getShortExchange(), spread.getCurrencyPair());
+        OrderBook longOrderBook = spread.getLongExchange().getMarketDataService().getOrderBook(longCurrencyPair);
+        OrderBook shortOrderBook = spread.getShortExchange().getMarketDataService().getOrderBook(shortCurrencyPair);
 
-        try {
-            OrderBook orderBook = exchange.getMarketDataService().getOrderBook(currencyPair);
-            List<LimitOrder> orders = orderType.equals(Order.OrderType.ASK) ? orderBook.getAsks() : orderBook.getBids();
-            BigDecimal price;
-            BigDecimal volume = BigDecimal.ZERO;
+        List<LimitOrder> bidOrders = isEntry ? shortOrderBook.getBids() : longOrderBook.getBids();
+        List<LimitOrder> askOrders = isEntry ? longOrderBook.getAsks() : shortOrderBook.getAsks();
+        BigDecimal bidPrice = getPriceFromOrders(bidOrders, longAllowedVolume);
+        BigDecimal askPrice = getPriceFromOrders(askOrders, shortAllowedVolume);
 
-            // Walk through orders, ordered by price, until we satisfy all the volume we need.
-            // Return the price of the last order we see.
-            //
-            // If we set our limit order at this price (without waiting too long) it is very likely to fill
-            // because we know the exchange has enough currency available to fill it at this or a better price.
-            for (LimitOrder order : orders) {
-                price = order.getLimitPrice();
-                volume = volume.add(order.getRemainingAmount());
+        return new Ticker.Builder()
+            .bid(bidPrice)
+            .ask(askPrice)
+            .build();
+    }
 
-                if (volume.compareTo(allowedVolume) > 0) {
-                    return price;
-                }
+    // Walk through orders, ordered by price, until we satisfy all the volume we need.
+    // Return the price of the last order we see.
+    //
+    // If we set our limit order at this price (without waiting too long) it is very likely to fill
+    // because we know the exchange has enough currency available to fill it at this or a better price.
+    private BigDecimal getPriceFromOrders(List<LimitOrder> orders, BigDecimal allowedVolume) {
+        BigDecimal price;
+        BigDecimal volume = BigDecimal.ZERO;
+
+        for (LimitOrder order : orders) {
+            price = order.getLimitPrice();
+            volume = volume.add(order.getRemainingAmount());
+
+            if (volume.compareTo(allowedVolume) > 0) {
+                return price;
             }
-        } catch (IOException e) {
-            LOGGER.error("IOE fetching {} {} order volume", exchange.getExchangeSpecification().getExchangeName(), currencyPair, e);
         }
 
-        throw new RuntimeException("Not enough liquidity on exchange to fulfill required volume!");
+        throw new RuntimeException("Not enough liquidity!");
     }
 
     /**
